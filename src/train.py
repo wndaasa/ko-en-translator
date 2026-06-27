@@ -7,6 +7,7 @@ AdamW(워밍업·역제곱근) + bf16 autocast. 검증 손실과 ko→en BLEU로
 from __future__ import annotations
 
 import argparse
+import functools
 import math
 import time
 from pathlib import Path
@@ -15,10 +16,12 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from .data import MTDataset, collate, read_pairs
+from .char_encoder import MCEConfig, MCETransformer
+from .char_tokenizer import CharTokenizer, build_char_vocab
+from .data import MCEDataset, MTDataset, collate, mce_collate, read_pairs
 from .model import ModelConfig, Seq2SeqTransformer
 from .tokenizer import PAD_ID, load_tokenizer
-from .translate import greedy_translate
+from .translate import greedy_translate, greedy_translate_mce
 
 
 def lr_lambda(step: int, warmup: int) -> float:
@@ -30,31 +33,40 @@ def get_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def forward_logits(model, batch, device, arch):
+    """아키텍처에 맞게 forward. bpe: (src, dec_in) / mce: (src_char, tag, dec_in)."""
+    dec_in = batch["dec_in"].to(device)
+    if arch == "mce":
+        return model(batch["src"].to(device), batch["tag"].to(device), dec_in)
+    return model(batch["src"].to(device), dec_in)
+
+
 @torch.no_grad()
-def evaluate(model, tokenizer, val_pairs, val_loader, device, use_amp, bleu_samples):
+def evaluate(model, tokenizer, val_pairs, val_loader, device, use_amp, bleu_samples, arch, char_tok):
     """검증 손실(양방향)과 ko→en BLEU(우선 방향)를 계산."""
     model.eval()
     total_loss, total_tok = 0.0, 0
     for batch in val_loader:
-        src = batch["src"].to(device)
-        dec_in = batch["dec_in"].to(device)
         labels = batch["labels"].to(device)
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-            logits = model(src, dec_in)
+            logits = forward_logits(model, batch, device, arch)
             loss = F.cross_entropy(
                 logits.reshape(-1, logits.size(-1)), labels.reshape(-1),
                 ignore_index=PAD_ID, reduction="sum",
             )
-        ntok = (labels != PAD_ID).sum().item()
         total_loss += loss.item()
-        total_tok += ntok
+        total_tok += (labels != PAD_ID).sum().item()
     val_loss = total_loss / max(total_tok, 1)
 
     # ko -> en BLEU (영어 타깃, sacrebleu 표준)
     import sacrebleu
     sample = val_pairs[:bleu_samples]
-    hyps = [greedy_translate(model, tokenizer, ko, device, target_lang="en", max_new=128)
-            for ko, _ in sample]
+    if arch == "mce":
+        hyps = [greedy_translate_mce(model, char_tok, tokenizer, ko, device, "en", 128)
+                for ko, _ in sample]
+    else:
+        hyps = [greedy_translate(model, tokenizer, ko, device, target_lang="en", max_new=128)
+                for ko, _ in sample]
     refs = [en for _, en in sample]
     bleu = sacrebleu.corpus_bleu(hyps, [refs]).score
     model.train()
@@ -68,24 +80,46 @@ def train(args: argparse.Namespace) -> None:
     tokenizer = load_tokenizer(art / "tokenizer.json")
     vocab_size = tokenizer.get_vocab_size()
 
-    train_ds = MTDataset(args.train_data, tokenizer, max_len=args.max_len, bidirectional=True)
-    train_loader = DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate,
-        num_workers=args.num_workers, persistent_workers=args.num_workers > 0, drop_last=True,
-    )
+    arch = args.arch
+    char_tok = None
     val_pairs = read_pairs(args.val_data)
     if args.max_val:
         val_pairs = val_pairs[: args.max_val]
-    val_ds = MTDataset(args.val_data, tokenizer, max_len=args.max_len, bidirectional=True,
-                       limit=args.max_val)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate)
 
-    cfg = ModelConfig(
-        vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
-        n_enc_layers=args.layers, n_dec_layers=args.layers, d_ff=args.d_ff,
-        max_len=args.max_len, dropout=args.dropout,
+    if arch == "mce":
+        char_vocab_path = Path(args.char_vocab) if args.char_vocab else (art / "char_vocab.json")
+        if not char_vocab_path.exists():
+            build_char_vocab([args.train_data], char_vocab_path, min_freq=2)
+        char_tok = CharTokenizer.from_file(char_vocab_path)
+        train_ds = MCEDataset(args.train_data, char_tok, tokenizer, max_len=args.max_len,
+                              max_chars=args.max_chars, bidirectional=True)
+        val_ds = MCEDataset(args.val_data, char_tok, tokenizer, max_len=args.max_len,
+                            max_chars=args.max_chars, bidirectional=True, limit=args.max_val)
+        coll = functools.partial(mce_collate, max_chars=args.max_chars)
+        cfg = MCEConfig(
+            char_vocab_size=char_tok.vocab_size(), tgt_vocab_size=vocab_size,
+            d_model=args.d_model, n_heads=args.n_heads, n_enc_layers=args.layers,
+            n_dec_layers=args.layers, d_ff=args.d_ff, max_len=args.max_len,
+            max_chars=args.max_chars, dropout=args.dropout,
+        )
+        model = MCETransformer(cfg).to(device)
+    else:
+        train_ds = MTDataset(args.train_data, tokenizer, max_len=args.max_len, bidirectional=True)
+        val_ds = MTDataset(args.val_data, tokenizer, max_len=args.max_len, bidirectional=True,
+                           limit=args.max_val)
+        coll = collate
+        cfg = ModelConfig(
+            vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
+            n_enc_layers=args.layers, n_dec_layers=args.layers, d_ff=args.d_ff,
+            max_len=args.max_len, dropout=args.dropout,
+        )
+        model = Seq2SeqTransformer(cfg).to(device)
+
+    train_loader = DataLoader(
+        train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=coll,
+        num_workers=args.num_workers, persistent_workers=args.num_workers > 0, drop_last=True,
     )
-    model = Seq2SeqTransformer(cfg).to(device)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=coll)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_lambda(s, args.warmup))
     use_amp = device == "cuda"
@@ -120,7 +154,7 @@ def train(args: argparse.Namespace) -> None:
         """이어하기에 필요한 전체 상태 저장. next_epoch=재개 시 시작할 epoch."""
         torch.save({"model": model.state_dict(), "opt": opt.state_dict(),
                     "sched": sched.state_dict(), "step": step, "next_epoch": next_epoch,
-                    "best_val": best_val, "config": cfg.__dict__, "bidirectional": True},
+                    "best_val": best_val, "config": cfg.__dict__, "arch": arch, "bidirectional": True},
                    art / "resume.pt")
 
     t0 = time.time()
@@ -128,12 +162,10 @@ def train(args: argparse.Namespace) -> None:
     model.train()
     for epoch in range(start_epoch, args.epochs + 1):
         for batch in train_loader:
-            src = batch["src"].to(device)
-            dec_in = batch["dec_in"].to(device)
             labels = batch["labels"].to(device)
             opt.zero_grad()
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-                logits = model(src, dec_in)
+                logits = forward_logits(model, batch, device, arch)
                 loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)), labels.reshape(-1),
                     ignore_index=PAD_ID, label_smoothing=args.label_smoothing,
@@ -156,13 +188,13 @@ def train(args: argparse.Namespace) -> None:
 
             if step % args.eval_every == 0:
                 val_loss, bleu = evaluate(model, tokenizer, val_pairs, val_loader,
-                                          device, use_amp, args.bleu_samples)
+                                          device, use_amp, args.bleu_samples, arch, char_tok)
                 ppl = math.exp(min(val_loss, 20))
                 tag = ""
                 if val_loss < best_val:
                     best_val = val_loss
                     torch.save({"model": model.state_dict(), "config": cfg.__dict__,
-                                "bidirectional": True}, art / "best.pt")
+                                "arch": arch, "bidirectional": True}, art / "best.pt")
                     tag = "  <- best 저장"
                 # 크래시/중단 대비 전체 상태 저장(현재 epoch 재시작 기준).
                 save_resume(epoch)
@@ -170,8 +202,8 @@ def train(args: argparse.Namespace) -> None:
                       f"| ko->en BLEU {bleu:.2f}{tag}")
                 t0 = time.time()
 
-        torch.save({"model": model.state_dict(), "config": cfg.__dict__, "bidirectional": True},
-                   art / "last.pt")
+        torch.save({"model": model.state_dict(), "config": cfg.__dict__, "arch": arch,
+                    "bidirectional": True}, art / "last.pt")
         save_resume(epoch + 1)  # epoch 완료 → 다음 epoch부터 재개
     print(f"학습 종료. best val_loss={best_val:.3f} | 체크포인트: {art}/best.pt, {art}/last.pt")
 
@@ -183,6 +215,9 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--artifacts", default="runs/base")
     ap.add_argument("--init-from", default=None, help="사전학습 가중치(파인튜닝 시작점). 옵티마이저는 새로 시작.")
     ap.add_argument("--resume", default=None, help="resume.pt 경로. 중단된 학습을 이어서 진행.")
+    ap.add_argument("--arch", default="bpe", choices=["bpe", "mce"], help="인코더 구조: 베이스라인 BPE / MCE 문자합성.")
+    ap.add_argument("--char-vocab", default=None, help="MCE 문자 vocab 경로(없으면 train-data로 생성).")
+    ap.add_argument("--max-chars", type=int, default=20, help="MCE 단어당 최대 문자 수.")
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=5e-4)

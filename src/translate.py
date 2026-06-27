@@ -45,6 +45,32 @@ def greedy_translate(
     return decode(tokenizer, ys[0].tolist())
 
 
+@torch.no_grad()
+def greedy_translate_mce(model, char_tok, bpe_tok: Tokenizer, text: str, device: str,
+                         target_lang: str, max_new: int = 128) -> str:
+    """MCE 모델용 greedy 번역. 소스는 문자(음절)로 인코딩, 방향 태그 사용."""
+    from .char_tokenizer import UNK_CHAR_ID, PAD_CHAR_ID
+    cfg = model.cfg
+    words = char_tok.encode_sentence(text)
+    words = [w[: cfg.max_chars] for w in words][: cfg.max_len - 1]
+    if not words:
+        words = [[UNK_CHAR_ID]]
+    src = torch.full((1, len(words), cfg.max_chars), PAD_CHAR_ID, dtype=torch.long, device=device)
+    for wi, w in enumerate(words):
+        length = min(len(w), cfg.max_chars)
+        src[0, wi, :length] = torch.tensor(w[:length], dtype=torch.long, device=device)
+    tag = torch.tensor([0 if target_lang == "en" else 1], dtype=torch.long, device=device)
+    memory, keep = model.encode(src, tag)
+    ys = torch.tensor([[BOS_ID]], dtype=torch.long, device=device)
+    for _ in range(max_new):
+        h = model.decode(ys, memory, keep)
+        nxt = int(model.lm_head(h)[:, -1].argmax(-1).item())
+        ys = torch.cat([ys, torch.tensor([[nxt]], device=device)], dim=1)
+        if nxt == EOS_ID:
+            break
+    return decode(bpe_tok, ys[0].tolist())
+
+
 def _main() -> None:
     ap = argparse.ArgumentParser(description="번역 (greedy)")
     ap.add_argument("--artifacts", default="artifacts")

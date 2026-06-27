@@ -45,7 +45,7 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
 - [x] **Stage 1 — 트랜스포머 직접 구현** (완료): 한·영 공용 BPE → 인코더-디코더 모델 → 학습 루프 → 토이 overfit 검증 (loss 6.52→0.00, 학습셋 exact-match 100%). 상세: [docs/stage1-implementation.md](docs/stage1-implementation.md)
 - [x] **Stage 2 — 실코퍼스 번역 학습** (완료): OPUS-100 양방향 기반 학습 + AI Hub 기술과학 논문 파인튜닝. ko→en BLEU 7.36(일반) → **44.10(학술)**. 긴 문단은 문장 청킹으로 번역. 상세: [docs/stage2-translation.md](docs/stage2-translation.md)
   - 산출물: `runs/base/best.pt`(일반·대화), `runs/finetune/best.pt`(논문 특화). 학술 파인튜닝은 catastrophic forgetting으로 대화 능력을 잃어 **2-모델 구성**으로 사용.
-- [ ] **Stage 3 — MCE (형태소 합성 인코더)** (계획): 플랫 BPE 대신 문자(음절)→단어 합성으로 인코딩해 저빈도 전문어 오역을 줄이는 신규 구조 실험. 설계: [docs/roadmap-stage3-mce.md](docs/roadmap-stage3-mce.md)
+- [x] **Stage 3 — MCE (형태소 합성 인코더)** (완료, **음성 결과**): 플랫 BPE 대신 문자(음절)→단어 CharCNN 합성 인코더를 직접 구현해 베이스라인과 동일 조건으로 비교. 동일 step에서 MCE가 val_loss·BLEU 모두 일관되게 뒤지고 학습은 ~5배 느림 → 가설 미지지(BPE가 강한 베이스라인). "가설→공정한 실험→분석"의 정직한 음성 결과. 상세: [docs/roadmap-stage3-mce.md](docs/roadmap-stage3-mce.md)
 
 > **데이터·가중치는 저장소에 포함하지 않습니다.** 코퍼스는 대용량·라이선스(AI Hub 재배포 금지) 이슈로 `prepare_data.py`/`prepare_aihub.py`로 재생성하며, 학습 가중치(`runs/`)는 추후 Hugging Face로 별도 배포 예정입니다. 데이터 준비 명령은 [CLAUDE.md](CLAUDE.md) 참고.
 
@@ -94,13 +94,16 @@ Transformer/
 ├─ src/
 │  ├─ tokenizer.py              # 한·영 공용 ByteLevel BPE (방향 태그 포함)
 │  ├─ model.py                  # 인코더-디코더 트랜스포머 (from scratch)
-│  ├─ data.py                   # 병렬 코퍼스 로딩/배치 (양방향 MTDataset)
+│  ├─ data.py                   # 병렬 코퍼스 로딩/배치 (양방향 MTDataset, MCEDataset)
 │  ├─ prepare_data.py           # OPUS-100 다운로드/정제
 │  ├─ prepare_aihub.py          # AI Hub 기술과학 CSV 정제
-│  ├─ train.py                  # 학습 루프 (BLEU 평가·resume·init-from)
-│  └─ translate.py              # greedy 디코딩 번역
+│  ├─ char_tokenizer.py         # (Stage 3) 문자(음절) 토크나이저
+│  ├─ char_encoder.py           # (Stage 3) CharCNN 합성기 + MCE 트랜스포머
+│  ├─ train.py                  # 학습 루프 (BLEU 평가·resume·init-from·--arch mce)
+│  └─ translate.py              # greedy 디코딩 번역 (bpe/mce)
 ├─ tests/
 │  ├─ test_model.py             # shape/causality 단위 테스트
+│  ├─ test_mce.py               # MCE 구조 단위 테스트
 │  └─ check_overfit.py          # 토이 overfit exact-match 검증
 ├─ data/
 │  ├─ toy_parallel.tsv          # 한-영 토이 병렬 코퍼스 (Stage 1)

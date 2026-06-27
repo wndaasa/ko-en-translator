@@ -13,6 +13,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
+from .char_tokenizer import PAD_CHAR_ID, UNK_CHAR_ID, CharTokenizer
 from .tokenizer import BOS_ID, EOS_ID, PAD_ID, Tokenizer, encode, load_tokenizer, tag_id
 
 
@@ -127,6 +128,72 @@ def collate(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         return out
 
     return {"src": pad("src"), "dec_in": pad("dec_in"), "labels": pad("labels")}
+
+
+# ---- MCE (형태소 합성 인코더)용 데이터 ----
+
+class MCEDataset(Dataset):
+    """소스는 문자(음절) 인코딩, 타깃은 BPE. 양방향(방향 태그) 지원.
+
+    아이템: {src_words: list[list[int]], tag: int(0=en,1=ko), dec_in, labels}
+    """
+
+    def __init__(self, tsv_path: str | Path, char_tok: CharTokenizer, bpe_tok: Tokenizer,
+                 max_len: int = 128, max_chars: int = 20, bidirectional: bool = True, limit: int = 0):
+        self.char_tok = char_tok
+        self.bpe = bpe_tok
+        self.pairs = read_pairs(tsv_path)
+        if limit:
+            self.pairs = self.pairs[:limit]
+        self.max_len = max_len
+        self.max_chars = max_chars
+        self.index: list[tuple[int, str]] = []
+        for i in range(len(self.pairs)):
+            self.index.append((i, "en"))
+            if bidirectional:
+                self.index.append((i, "ko"))
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def __getitem__(self, idx: int) -> dict:
+        pair_idx, target_lang = self.index[idx]
+        ko, en = self.pairs[pair_idx]
+        src_text, tgt_text = (ko, en) if target_lang == "en" else (en, ko)
+        words = self.char_tok.encode_sentence(src_text)
+        words = [w[: self.max_chars] for w in words][: self.max_len - 1]
+        if not words:  # 빈 소스 안전장치
+            words = [[UNK_CHAR_ID]]
+        tgt_ids = encode(self.bpe, tgt_text)[: self.max_len - 2]
+        tgt_full = [BOS_ID] + tgt_ids + [EOS_ID]
+        return {
+            "src_words": words,
+            "tag": 0 if target_lang == "en" else 1,
+            "dec_in": torch.tensor(tgt_full[:-1], dtype=torch.long),
+            "labels": torch.tensor(tgt_full[1:], dtype=torch.long),
+        }
+
+
+def mce_collate(batch: list[dict], max_chars: int = 20) -> dict[str, torch.Tensor]:
+    """소스 (B, 최대단어수, max_chars), 타깃 (B, 최대길이) 패딩."""
+    b = len(batch)
+    max_words = max(len(x["src_words"]) for x in batch)
+    src = torch.full((b, max_words, max_chars), PAD_CHAR_ID, dtype=torch.long)
+    for i, x in enumerate(batch):
+        for wi, word in enumerate(x["src_words"]):
+            length = min(len(word), max_chars)
+            src[i, wi, :length] = torch.tensor(word[:length], dtype=torch.long)
+    tag = torch.tensor([x["tag"] for x in batch], dtype=torch.long)
+
+    def pad(key: str) -> torch.Tensor:
+        seqs = [x[key] for x in batch]
+        maxlen = max(s.size(0) for s in seqs)
+        out = torch.full((b, maxlen), PAD_ID, dtype=torch.long)
+        for i, s in enumerate(seqs):
+            out[i, : s.size(0)] = s
+        return out
+
+    return {"src": src, "tag": tag, "dec_in": pad("dec_in"), "labels": pad("labels")}
 
 
 __all__ = ["TranslationDataset", "collate", "read_pairs", "load_tokenizer",
