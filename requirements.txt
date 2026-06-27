@@ -1,0 +1,11 @@
+# PyTorch는 ROCm 휠로 별도 설치합니다 (AMD GPU + WSL2). 자세한 절차는
+# docs/environment-setup.md 참고. 예시(ROCm 7.2.1, Python 3.12):
+#   pip install \
+#     https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1/torch-2.9.1%2Brocm7.2.1.lw.gitff65f5bc-cp312-cp312-linux_x86_64.whl \
+#     https://repo.radeon.com/rocm/manylinux/rocm-rel-7.2.1/triton-3.5.1%2Brocm7.2.1.gita272dfa8-cp312-cp312-linux_x86_64.whl
+# NVIDIA/CPU 환경이면 표준 PyTorch(>=2.4)를 설치하면 됩니다.
+
+tokenizers>=0.20
+datasets>=3.0
+sacrebleu>=2.4
+numpy

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+
+# 생성물 — 코드/스크립트로 재생성 가능하므로 저장소에 포함하지 않음
+# data/processed/: OPUS/AI Hub 정제 코퍼스 (prepare_*.py 로 재생성)
+# artifacts/: Stage 1 토이 산출물
+# runs/: Stage 2 학습 산출물(가중치) — 대용량, HF로 별도 배포 예정
+# (AI Hub 원본/파생 데이터는 재배포 라이선스상 비공개)
+data/processed/
+artifacts/
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
