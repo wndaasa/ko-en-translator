@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 from .char_encoder import MCEConfig, MCETransformer
 from .char_tokenizer import CharTokenizer, build_char_vocab
 from .data import MCEDataset, MTDataset, collate, mce_collate, read_pairs
+from .minrnn import MinRNNConfig, MinRNNSeq2Seq
 from .model import ModelConfig, Seq2SeqTransformer
 from .tokenizer import PAD_ID, load_tokenizer
 from .translate import greedy_translate, greedy_translate_mce
@@ -104,16 +105,25 @@ def train(args: argparse.Namespace) -> None:
         )
         model = MCETransformer(cfg).to(device)
     else:
+        # bpe(트랜스포머)와 minrnn은 데이터 파이프라인(토큰 기반)이 동일.
         train_ds = MTDataset(args.train_data, tokenizer, max_len=args.max_len, bidirectional=True)
         val_ds = MTDataset(args.val_data, tokenizer, max_len=args.max_len, bidirectional=True,
                            limit=args.max_val)
         coll = collate
-        cfg = ModelConfig(
-            vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
-            n_enc_layers=args.layers, n_dec_layers=args.layers, d_ff=args.d_ff,
-            max_len=args.max_len, dropout=args.dropout,
-        )
-        model = Seq2SeqTransformer(cfg).to(device)
+        if arch == "minrnn":
+            cfg = MinRNNConfig(
+                vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
+                n_enc_layers=args.layers, n_dec_layers=args.layers, d_ff=args.d_ff,
+                max_len=args.max_len, dropout=args.dropout,
+            )
+            model = MinRNNSeq2Seq(cfg).to(device)
+        else:
+            cfg = ModelConfig(
+                vocab_size=vocab_size, d_model=args.d_model, n_heads=args.n_heads,
+                n_enc_layers=args.layers, n_dec_layers=args.layers, d_ff=args.d_ff,
+                max_len=args.max_len, dropout=args.dropout,
+            )
+            model = Seq2SeqTransformer(cfg).to(device)
 
     train_loader = DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=coll,
@@ -215,7 +225,8 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--artifacts", default="runs/base")
     ap.add_argument("--init-from", default=None, help="사전학습 가중치(파인튜닝 시작점). 옵티마이저는 새로 시작.")
     ap.add_argument("--resume", default=None, help="resume.pt 경로. 중단된 학습을 이어서 진행.")
-    ap.add_argument("--arch", default="bpe", choices=["bpe", "mce"], help="인코더 구조: 베이스라인 BPE / MCE 문자합성.")
+    ap.add_argument("--arch", default="bpe", choices=["bpe", "mce", "minrnn"],
+                    help="구조: 베이스라인 트랜스포머(bpe) / MCE 문자합성 / minRNN 선형순환.")
     ap.add_argument("--char-vocab", default=None, help="MCE 문자 vocab 경로(없으면 train-data로 생성).")
     ap.add_argument("--max-chars", type=int, default=20, help="MCE 단어당 최대 문자 수.")
     ap.add_argument("--epochs", type=int, default=4)

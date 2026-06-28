@@ -46,6 +46,7 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
 - [x] **Stage 2 — 실코퍼스 번역 학습** (완료): OPUS-100 양방향 기반 학습 + AI Hub 기술과학 논문 파인튜닝. ko→en BLEU 7.36(일반) → **44.10(학술)**. 긴 문단은 문장 청킹으로 번역. 상세: [docs/stage2-translation.md](docs/stage2-translation.md)
   - 산출물: `runs/base/best.pt`(일반·대화), `runs/finetune/best.pt`(논문 특화). 학술 파인튜닝은 catastrophic forgetting으로 대화 능력을 잃어 **2-모델 구성**으로 사용.
 - [x] **Stage 3 — MCE (형태소 합성 인코더)** (완료, **음성 결과**): 플랫 BPE 대신 문자(음절)→단어 CharCNN 합성 인코더를 직접 구현해 베이스라인과 동일 조건으로 비교. 동일 step에서 MCE가 val_loss·BLEU 모두 일관되게 뒤지고 학습은 ~5배 느림 → 가설 미지지(BPE가 강한 베이스라인). "가설→공정한 실험→분석"의 정직한 음성 결과. 상세: [docs/roadmap-stage3-mce.md](docs/roadmap-stage3-mce.md)
+- [x] **Stage 4 — minRNN (선형 순환 seq2seq)** (완료, **양성 결과**): 어텐션을 minGRU 선형 순환으로 대체(학습 병렬·추론 O(1)). 동일 파라미터(60.5M)에서 **품질은 동일 step 기준 트랜스포머를 앞서고**, 디코딩 길이 L=4096에서 **메모리 ~2.5배 적고 속도 ~2.2배 빠름**(O(L) vs O(L²)). 상세: [docs/stage4-minrnn.md](docs/stage4-minrnn.md)
 
 > **데이터·가중치는 저장소에 포함하지 않습니다.** 코퍼스는 대용량·라이선스(AI Hub 재배포 금지) 이슈로 `prepare_data.py`/`prepare_aihub.py`로 재생성하며, 학습 가중치(`runs/`)는 추후 Hugging Face로 별도 배포 예정입니다. 데이터 준비 명령은 [CLAUDE.md](CLAUDE.md) 참고.
 
@@ -99,11 +100,14 @@ Transformer/
 │  ├─ prepare_aihub.py          # AI Hub 기술과학 CSV 정제
 │  ├─ char_tokenizer.py         # (Stage 3) 문자(음절) 토크나이저
 │  ├─ char_encoder.py           # (Stage 3) CharCNN 합성기 + MCE 트랜스포머
-│  ├─ train.py                  # 학습 루프 (BLEU 평가·resume·init-from·--arch mce)
-│  └─ translate.py              # greedy 디코딩 번역 (bpe/mce)
+│  ├─ minrnn.py                 # (Stage 4) minGRU 선형순환 seq2seq
+│  ├─ train.py                  # 학습 루프 (resume·init-from·--arch bpe/mce/minrnn)
+│  └─ translate.py              # greedy 디코딩 번역 (bpe/mce/minrnn)
 ├─ tests/
 │  ├─ test_model.py             # shape/causality 단위 테스트
 │  ├─ test_mce.py               # MCE 구조 단위 테스트
+│  ├─ test_minrnn.py            # minRNN 구조 단위 테스트
+│  ├─ benchmark_efficiency.py   # 디코딩 메모리/속도 벤치 (Transformer vs minRNN)
 │  └─ check_overfit.py          # 토이 overfit exact-match 검증
 ├─ data/
 │  ├─ toy_parallel.tsv          # 한-영 토이 병렬 코퍼스 (Stage 1)
