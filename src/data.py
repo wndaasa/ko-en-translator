@@ -14,7 +14,8 @@ import torch
 from torch.utils.data import Dataset
 
 from .char_tokenizer import PAD_CHAR_ID, UNK_CHAR_ID, CharTokenizer
-from .tokenizer import BOS_ID, EOS_ID, PAD_ID, Tokenizer, encode, load_tokenizer, tag_id
+from .tokenizer import (BOS_ID, EOS_ID, PAD_ID, Tokenizer, domain_tag_id, encode,
+                        load_tokenizer, tag_id)
 
 
 def read_pairs(tsv_path: str | Path) -> list[tuple[str, str]]:
@@ -128,6 +129,57 @@ def collate(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
         return out
 
     return {"src": pad("src"), "dec_in": pad("dec_in"), "labels": pad("labels")}
+
+
+# ---- 도메인 혼합(레지스터 태그)용 데이터 ----
+
+def read_triples(tsv_path: str | Path) -> list[tuple[str, str, str]]:
+    """domain<TAB>ko<TAB>en 형식 읽기."""
+    out: list[tuple[str, str, str]] = []
+    with open(tsv_path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) != 3:
+                continue
+            out.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+    return out
+
+
+class MixedMTDataset(Dataset):
+    """도메인 라벨이 있는 양방향 번역. 소스 = [방향태그][도메인태그] + 문장 + <eos>.
+
+    한 (domain, ko, en) 삼중항이 ko→en, en→ko 두 예시가 된다(도메인은 동일).
+    """
+
+    def __init__(self, tsv_path: str | Path, tokenizer: Tokenizer, max_len: int = 128,
+                 bidirectional: bool = True, limit: int = 0):
+        self.tok = tokenizer
+        self.triples = read_triples(tsv_path)
+        if limit:
+            self.triples = self.triples[:limit]
+        self.max_len = max_len
+        self.index: list[tuple[int, str]] = []
+        for i in range(len(self.triples)):
+            self.index.append((i, "en"))
+            if bidirectional:
+                self.index.append((i, "ko"))
+
+    def __len__(self) -> int:
+        return len(self.index)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        tri_idx, target_lang = self.index[idx]
+        domain, ko, en = self.triples[tri_idx]
+        src_text, tgt_text = (ko, en) if target_lang == "en" else (en, ko)
+        src_ids = encode(self.tok, src_text)[: self.max_len - 3]
+        tgt_ids = encode(self.tok, tgt_text)[: self.max_len - 2]
+        src = [tag_id(target_lang), domain_tag_id(domain)] + src_ids + [EOS_ID]
+        tgt_full = [BOS_ID] + tgt_ids + [EOS_ID]
+        return {
+            "src": torch.tensor(src, dtype=torch.long),
+            "dec_in": torch.tensor(tgt_full[:-1], dtype=torch.long),
+            "labels": torch.tensor(tgt_full[1:], dtype=torch.long),
+        }
 
 
 # ---- MCE (형태소 합성 인코더)용 데이터 ----

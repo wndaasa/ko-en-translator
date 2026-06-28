@@ -7,7 +7,8 @@ from pathlib import Path
 import torch
 
 from .model import ModelConfig, Seq2SeqTransformer
-from .tokenizer import BOS_ID, EOS_ID, Tokenizer, decode, encode, load_tokenizer, tag_id
+from .tokenizer import (BOS_ID, EOS_ID, Tokenizer, decode, domain_tag_id, encode,
+                        load_tokenizer, tag_id)
 
 
 def load_model(ckpt_path: str | Path, device: str) -> tuple[Seq2SeqTransformer, str]:
@@ -27,12 +28,18 @@ def greedy_translate(
     device: str,
     target_lang: str | None = None,
     max_new: int = 64,
+    domain: str | None = None,
 ) -> str:
-    """target_lang('en'|'ko')이 주어지면 소스 선두에 방향 태그를 부착한다(양방향 모델용).
+    """target_lang('en'|'ko')이 주어지면 소스 선두에 방향 태그를 부착(양방향 모델용).
+    domain('casual'|'formal')이 주어지면 방향태그 뒤에 도메인 태그도 부착(혼합 모델용).
     None이면 태그 없이 인코딩(단방향 stage1 모델 호환)."""
     ids = encode(tokenizer, text, add_eos=True)
+    prefix: list[int] = []
     if target_lang is not None:
-        ids = [tag_id(target_lang)] + ids
+        prefix.append(tag_id(target_lang))
+    if domain is not None:
+        prefix.append(domain_tag_id(domain))
+    ids = prefix + ids
     src = torch.tensor([ids], dtype=torch.long, device=device)
     memory = model.encode(src)
     ys = torch.tensor([[BOS_ID]], dtype=torch.long, device=device)

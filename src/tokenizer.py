@@ -20,13 +20,20 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers, trainers
 
 PAD, BOS, EOS, UNK = "<pad>", "<bos>", "<eos>", "<unk>"
 TAG_EN, TAG_KO = "<2en>", "<2ko>"
-SPECIAL_TOKENS = [PAD, BOS, EOS, UNK, TAG_EN, TAG_KO]
-PAD_ID, BOS_ID, EOS_ID, UNK_ID, TAG_EN_ID, TAG_KO_ID = 0, 1, 2, 3, 4, 5
+DOM_CASUAL, DOM_FORMAL = "<casual>", "<formal>"  # 도메인(레지스터) 태그
+SPECIAL_TOKENS = [PAD, BOS, EOS, UNK, TAG_EN, TAG_KO, DOM_CASUAL, DOM_FORMAL]
+(PAD_ID, BOS_ID, EOS_ID, UNK_ID, TAG_EN_ID, TAG_KO_ID,
+ DOM_CASUAL_ID, DOM_FORMAL_ID) = range(8)
 
 
 def tag_id(target_lang: str) -> int:
     """타깃 언어에 해당하는 방향 태그 ID. target_lang in {'en','ko'}."""
     return TAG_EN_ID if target_lang == "en" else TAG_KO_ID
+
+
+def domain_tag_id(domain: str) -> int:
+    """도메인(레지스터) 태그 ID. domain in {'casual','formal'}."""
+    return DOM_CASUAL_ID if domain == "casual" else DOM_FORMAL_ID
 
 
 def read_tsv_texts(tsv_path: str | Path) -> list[str]:

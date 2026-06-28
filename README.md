@@ -47,6 +47,7 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
   - 산출물: `runs/base/best.pt`(일반·대화), `runs/finetune/best.pt`(논문 특화). 학술 파인튜닝은 catastrophic forgetting으로 대화 능력을 잃어 **2-모델 구성**으로 사용.
 - [x] **Stage 3 — MCE (형태소 합성 인코더)** (완료, **음성 결과**): 플랫 BPE 대신 문자(음절)→단어 CharCNN 합성 인코더를 직접 구현해 베이스라인과 동일 조건으로 비교. 동일 step에서 MCE가 val_loss·BLEU 모두 일관되게 뒤지고 학습은 ~5배 느림 → 가설 미지지(BPE가 강한 베이스라인). "가설→공정한 실험→분석"의 정직한 음성 결과. 상세: [docs/roadmap-stage3-mce.md](docs/roadmap-stage3-mce.md)
 - [x] **Stage 4 — minRNN (선형 순환 seq2seq)** (완료, **양성 결과**): 어텐션을 minGRU 선형 순환으로 대체(학습 병렬·추론 O(1)). 동일 파라미터(60.5M)에서 **품질은 동일 step 기준 트랜스포머를 앞서고**, 디코딩 길이 L=4096에서 **메모리 ~2.5배 적고 속도 ~2.2배 빠름**(O(L) vs O(L²)). 상세: [docs/stage4-minrnn.md](docs/stage4-minrnn.md)
+- [x] **Stage 5 — 도메인 혼합 학습** (완료, **양성 결과**): 일상(OPUS)+격식(AI Hub) 균형 혼합 + 도메인 태그(`<casual>`/`<formal>`)로 minRNN 학습, 도메인별 BLEU 측정. 격식 추가 후에도 일상체가 단일도메인보다 오히려 높음(positive transfer) → **작은 모델이 두 레지스터를 망각 없이 공존**. 상세: [docs/stage5-domain-mix.md](docs/stage5-domain-mix.md)
 
 > **데이터·가중치는 저장소에 포함하지 않습니다.** 코퍼스는 대용량·라이선스(AI Hub 재배포 금지) 이슈로 `prepare_data.py`/`prepare_aihub.py`로 재생성하며, 학습 가중치(`runs/`)는 추후 Hugging Face로 별도 배포 예정입니다. 데이터 준비 명령은 [CLAUDE.md](CLAUDE.md) 참고.
 
@@ -98,6 +99,7 @@ Transformer/
 │  ├─ data.py                   # 병렬 코퍼스 로딩/배치 (양방향 MTDataset, MCEDataset)
 │  ├─ prepare_data.py           # OPUS-100 다운로드/정제
 │  ├─ prepare_aihub.py          # AI Hub 기술과학 CSV 정제
+│  ├─ prepare_mixed.py          # (Stage 5) 도메인 혼합 코퍼스 생성
 │  ├─ char_tokenizer.py         # (Stage 3) 문자(음절) 토크나이저
 │  ├─ char_encoder.py           # (Stage 3) CharCNN 합성기 + MCE 트랜스포머
 │  ├─ minrnn.py                 # (Stage 4) minGRU 선형순환 seq2seq
