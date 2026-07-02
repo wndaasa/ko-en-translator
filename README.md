@@ -9,13 +9,14 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
 
 - **1순위: 한↔영 번역.** 작은 크기에서 번역 품질을 우선.
 - **2순위: 간단한 대화.** 짧은 멀티턴 수준.
-- 비목표: 대용량 컨텍스트(롱컨텍스트), RAG, 범용 챗봇.
+- 비목표: RAG, 범용 챗봇.
 
-긴 문서(예: 50페이지 논문) 번역은 모델이 통째로 읽는 방식이 아니라,
-**문장/문단 단위로 분할 → 각 조각 번역 → 재조립**하는 청킹 파이프라인으로 처리합니다
-(어텐션의 $O(n^2)$ 비용 때문에 소형 모델은 짧은 컨텍스트를 유지).
+긴 문서(예: 50페이지 논문) 번역은 초기(Stage 2)에는 **문장 단위 청킹**(분할→번역→재조립)으로
+처리했으나, 문장별 번역은 용어·대명사·문체가 문장마다 흔들리는 한계가 있었습니다. 현재는
+**여러 문장을 문맥 윈도우로 묶어 통째로 번역하는 문서 모드**(Stage 6)가 기본입니다 — 어텐션의
+$O(n^2)$ 비용 대신 선형 순환(minRNN, $O(n)$)을 채택해 소형 모델로도 긴 컨텍스트를 감당합니다.
 
-## 아키텍처 결정: 인코더-디코더 (원조 Transformer)
+## 아키텍처 결정: 인코더-디코더 seq2seq
 
 번역이 1순위이므로 *Attention is All You Need*(2017)의 **인코더-디코더(seq2seq)** 구조를 채택합니다.
 
@@ -28,16 +29,24 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
 
 대화는 seq2seq 형태(입력→응답, T5/mT5 방식)로 처리합니다.
 
+> **현재 주력은 minRNN**(Stage 4~)입니다. 인코더-디코더 구조는 유지하되 어텐션을 **minGRU 선형
+> 순환**으로 대체 — 학습은 병렬 스캔으로 병렬화되고, 디코딩은 스텝당 $O(1)$·메모리 $O(L)$입니다.
+> 동일 파라미터에서 트랜스포머와 동급 이상 품질을 확인했고(상세: [docs/stage4-minrnn.md](docs/stage4-minrnn.md)),
+> 긴 문맥일수록 격차가 벌어져 문서 모드(Stage 6)의 토대가 됐습니다. positional embedding이 없어
+> (순환이 위치를 담당) max_len을 바꿔도 가중치를 그대로 이어 쓸 수 있습니다.
+
 ## 개발 환경
 
 | 항목 | 내용 |
 |---|---|
-| GPU | AMD Radeon RX 7800 XT (RDNA3, gfx1101, 16GB) |
-| 백엔드 | WSL2(Ubuntu 24.04) + ROCm 7.2.1 + ROCDXG (CUDA 불가, AMD GPU) |
-| 프레임워크 | PyTorch 2.9.1 (ROCm 빌드), Python 3.12 (conda env `tf`) |
+| GPU | NVIDIA RTX 4090 (24GB) — RunPod 클라우드 |
+| 백엔드 | Linux 컨테이너 + CUDA 12.8 |
+| 프레임워크 | PyTorch 2.8.0 (cu128), Python 3.12 |
 
-> AMD GPU는 Windows에서 CUDA를 쓸 수 없어 WSL2 + ROCm로 구성했습니다.
-> 구축 과정과 트러블슈팅은 [docs/environment-setup.md](docs/environment-setup.md)에 정리되어 있습니다.
+> Stage 0~5는 로컬 AMD RX 7800 XT(16GB, WSL2 + ROCm)에서 진행했고, 대용량 학습이 필요한
+> Stage 6부터 클라우드로 이전했습니다. 구 로컬 환경의 구축 과정과 트러블슈팅(ROCDXG,
+> `HSA_ENABLE_DXG_DETECTION` 등)은 [docs/environment-setup.md](docs/environment-setup.md)에
+> 기록으로 남겨 두었습니다 — 현재 환경에서는 표준 CUDA 휠이면 충분하고 별도 설정이 없습니다.
 
 ## 진행 상태
 
@@ -54,34 +63,28 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
 
 ## 환경 재현
 
-WSL2(Ubuntu 24.04)와 Windows용 AMD Adrenalin 드라이버가 설치된 상태에서:
+CUDA GPU가 있는 Linux면 표준 PyTorch 설치로 충분합니다:
 
 ```bash
-# 1) ROCm 설치 (sudo 필요)
-bash scripts/00_install_rocm.sh
-# 2) librocdxg 설치 — WSL에서 GPU를 잡기 위한 핵심 (sudo 필요)
-bash scripts/01_install_rocdxg.sh
-# 3) GPU 동작 검증
-bash scripts/02_verify_gpu.sh
+pip install torch tokenizers sacrebleu
 ```
 
-자세한 단계와 발생 가능한 문제는 [docs/environment-setup.md](docs/environment-setup.md) 참고.
+> 구 로컬 환경(WSL2 + ROCm, AMD GPU)을 재현하려면 `scripts/00~02` 셋업 스크립트와
+> [docs/environment-setup.md](docs/environment-setup.md)를 참고하세요. 이 경우 GPU 실행 시
+> `HSA_ENABLE_DXG_DETECTION=1`이 필요합니다.
 
-## 사용법 (Stage 1, 토이 데이터)
+## 사용법
 
 ```bash
-# WSL(Ubuntu)에서. GPU 사용 시 HSA_ENABLE_DXG_DETECTION=1 필수.
-PY=~/miniconda3/envs/tf/bin/python
-
-# 학습 (토이 병렬셋 overfit)
-HSA_ENABLE_DXG_DETECTION=1 $PY -m src.train --dropout 0.0 --epochs 400
+# 학습 (토이 병렬셋 overfit — Stage 1)
+python -m src.train --dropout 0.0 --epochs 400
 
 # 번역
-HSA_ENABLE_DXG_DETECTION=1 $PY -m src.translate --text "안녕하세요"
+python -m src.translate --text "안녕하세요"
 
 # 단위 테스트 / overfit 검증
-$PY -m tests.test_model
-HSA_ENABLE_DXG_DETECTION=1 $PY -m tests.check_overfit
+python -m tests.test_model
+python -m tests.check_overfit
 ```
 
 ## 프로젝트 구조

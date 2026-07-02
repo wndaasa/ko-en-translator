@@ -1,5 +1,9 @@
 # 환경 구축 기록: AMD GPU에서 PyTorch 학습 (WSL2 + ROCm + ROCDXG)
 
+> **[기록 보존용]** 이 문서는 Stage 0~5에서 쓰던 **구 로컬 개발 환경**의 구축 기록입니다.
+> Stage 6부터는 클라우드(RunPod, RTX 4090 24GB, CUDA 12.8)로 이전해 표준 PyTorch 휠만으로
+> 동작하며, 아래 내용은 현재 개발에는 적용되지 않습니다.
+
 이 문서는 **AMD Radeon RX 7800 XT**에서 PyTorch GPU 학습 환경을 구축한 전 과정과,
 그 과정에서 마주친 문제·원인·해결을 기록합니다.
 
