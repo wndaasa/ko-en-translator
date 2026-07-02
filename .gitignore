@@ -10,7 +10,10 @@ venv/
 # artifacts/: Stage 1 토이 산출물
 # runs/: Stage 2 학습 산출물(가중치) — 대용량, HF로 별도 배포 예정
 # (AI Hub 원본/파생 데이터는 재배포 라이선스상 비공개)
+# data/raw_opus/: OPUS moses 원본 코퍼스 (Stage 6, prepare_large.py 로 재다운로드)
 data/processed/
+data/raw_opus/
+data/한국어-영어 번역 말뭉치(기술과학)/
 artifacts/
 runs/
 

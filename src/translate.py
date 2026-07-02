@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 
 from .model import ModelConfig, Seq2SeqTransformer
+from .data import CONTEXT_SEP, _encode_context
 from .tokenizer import (BOS_ID, EOS_ID, Tokenizer, decode, domain_tag_id, encode,
                         load_tokenizer, tag_id)
 
@@ -76,6 +77,40 @@ def greedy_translate_mce(model, char_tok, bpe_tok: Tokenizer, text: str, device:
         if nxt == EOS_ID:
             break
     return decode(bpe_tok, ys[0].tolist())
+
+
+@torch.no_grad()
+def greedy_translate_context(
+    model: Seq2SeqTransformer,
+    tokenizer: Tokenizer,
+    text: str,
+    device: str,
+    target_lang: str | None = None,
+    sep_char: str = CONTEXT_SEP,
+    max_new: int = 1200,
+) -> str:
+    """문서/문맥 모드 번역.
+
+    입력 문장들을 <eos>로 이어붙여 인코딩(학습과 동일)하고, 디코더도 문장마다
+    <eos>를 내며 입력 문장 수(k)만큼 채우면 정지한다(k-to-k). 단일 문장용
+    greedy_translate 는 첫 <eos>에서 멈춰 문서모드에선 첫 문장만 나오므로 분리한다.
+    """
+    body = _encode_context(tokenizer, text, sep_char)
+    n_sent = max(1, body.count(EOS_ID))  # 입력 문장 수
+    ids = ([tag_id(target_lang)] if target_lang else []) + body
+    src = torch.tensor([ids], dtype=torch.long, device=device)
+    memory = model.encode(src)
+    ys = torch.tensor([[BOS_ID]], dtype=torch.long, device=device)
+    eos_seen = 0
+    for _ in range(max_new):
+        h = model.decode(ys, memory, src)
+        next_id = int(model.lm_head(h)[:, -1].argmax(-1).item())
+        ys = torch.cat([ys, torch.tensor([[next_id]], device=device)], dim=1)
+        if next_id == EOS_ID:
+            eos_seen += 1
+            if eos_seen >= n_sent:
+                break
+    return decode(tokenizer, ys[0].tolist())
 
 
 def _main() -> None:

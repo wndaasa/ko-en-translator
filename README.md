@@ -48,6 +48,7 @@ PyTorch로 Transformer를 **직접 구현**하는 프로젝트입니다.
 - [x] **Stage 3 — MCE (형태소 합성 인코더)** (완료, **음성 결과**): 플랫 BPE 대신 문자(음절)→단어 CharCNN 합성 인코더를 직접 구현해 베이스라인과 동일 조건으로 비교. 동일 step에서 MCE가 val_loss·BLEU 모두 일관되게 뒤지고 학습은 ~5배 느림 → 가설 미지지(BPE가 강한 베이스라인). "가설→공정한 실험→분석"의 정직한 음성 결과. 상세: [docs/roadmap-stage3-mce.md](docs/roadmap-stage3-mce.md)
 - [x] **Stage 4 — minRNN (선형 순환 seq2seq)** (완료, **양성 결과**): 어텐션을 minGRU 선형 순환으로 대체(학습 병렬·추론 O(1)). 동일 파라미터(60.5M)에서 **품질은 동일 step 기준 트랜스포머를 앞서고**, 디코딩 길이 L=4096에서 **메모리 ~2.5배 적고 속도 ~2.2배 빠름**(O(L) vs O(L²)). 상세: [docs/stage4-minrnn.md](docs/stage4-minrnn.md)
 - [x] **Stage 5 — 도메인 혼합 학습** (완료, **양성 결과**): 일상(OPUS)+격식(AI Hub) 균형 혼합 + 도메인 태그(`<casual>`/`<formal>`)로 minRNN 학습, 도메인별 BLEU 측정. 격식 추가 후에도 일상체가 단일도메인보다 오히려 높음(positive transfer) → **작은 모델이 두 레지스터를 망각 없이 공존**. 상세: [docs/stage5-domain-mix.md](docs/stage5-domain-mix.md)
+- [x] **Stage 6 — 문서/문맥 단위 번역** (완료, **양성 결과**): 앞뒤 문장을 `<eos>`로 이어붙인 문맥 결합(context-concatenation, k-to-k)으로 문서 단위 번역. minRNN 268M 2단계 학습 — 문장 사전학습(OPUS 8M+, val_loss 2.537) → 문맥 파인튜닝. 파이프라인을 TED2020으로 검증 후 **본 타깃인 논문 도메인(AI Hub 기술과학 60,483편, 179K 윈도우)** 학습: val_loss **0.906**/ppl 2.5, 문서모드 ko→en BLEU **35.46**, 의학·공학 전문용어 정확 번역(실사용 수준). 긴 컨텍스트에서 minRNN이 트랜스포머 대비 우위(디코딩 L=4096 메모리 2.65배·속도 2.9배, 학습 메모리 10.6GB vs 16.3GB) → **소형 GPU 한 장으로 문서 번역 학습 가능**. 상세: [docs/stage6-context.md](docs/stage6-context.md)
 
 > **데이터·가중치는 저장소에 포함하지 않습니다.** 코퍼스는 대용량·라이선스(AI Hub 재배포 금지) 이슈로 `prepare_data.py`/`prepare_aihub.py`로 재생성하며, 학습 가중치(`runs/`)는 추후 Hugging Face로 별도 배포 예정입니다. 데이터 준비 명령은 [CLAUDE.md](CLAUDE.md) 참고.
 
@@ -91,20 +92,26 @@ Transformer/
 ├─ docs/
 │  ├─ environment-setup.md      # 환경 구축 + 트러블슈팅 기록
 │  ├─ stage1-implementation.md  # Stage 1 구현/결정/결과
-│  └─ stage2-translation.md     # Stage 2 실코퍼스 학습/파인튜닝/결과
+│  ├─ stage2-translation.md     # Stage 2 실코퍼스 학습/파인튜닝/결과
+│  ├─ roadmap-stage3-mce.md     # Stage 3 MCE 설계/실험/음성 결과
+│  ├─ stage4-minrnn.md          # Stage 4 minRNN 구현/비교 결과
+│  ├─ stage5-domain-mix.md      # Stage 5 도메인 혼합 학습/평가
+│  └─ stage6-context.md         # Stage 6 문서/문맥 단위 번역
 ├─ scripts/                     # 환경 셋업 스크립트 (00~02)
 ├─ src/
 │  ├─ tokenizer.py              # 한·영 공용 ByteLevel BPE (방향 태그 포함)
 │  ├─ model.py                  # 인코더-디코더 트랜스포머 (from scratch)
-│  ├─ data.py                   # 병렬 코퍼스 로딩/배치 (양방향 MTDataset, MCEDataset)
+│  ├─ data.py                   # 병렬 코퍼스 로딩/배치 (양방향 MTDataset, 문서모드 지원)
 │  ├─ prepare_data.py           # OPUS-100 다운로드/정제
 │  ├─ prepare_aihub.py          # AI Hub 기술과학 CSV 정제
 │  ├─ prepare_mixed.py          # (Stage 5) 도메인 혼합 코퍼스 생성
+│  ├─ prepare_large.py          # (Stage 6) OPUS moses 대용량 코퍼스 다운로드/정제/중복제거
+│  ├─ prepare_context.py        # (Stage 6) 문서 경계 보존 문맥 윈도우 생성 (moses/CSV)
 │  ├─ char_tokenizer.py         # (Stage 3) 문자(음절) 토크나이저
 │  ├─ char_encoder.py           # (Stage 3) CharCNN 합성기 + MCE 트랜스포머
 │  ├─ minrnn.py                 # (Stage 4) minGRU 선형순환 seq2seq
-│  ├─ train.py                  # 학습 루프 (resume·init-from·--arch bpe/mce/minrnn)
-│  └─ translate.py              # greedy 디코딩 번역 (bpe/mce/minrnn)
+│  ├─ train.py                  # 학습 루프 (resume·init-from·--arch bpe/mce/minrnn·--context)
+│  └─ translate.py              # greedy 디코딩 번역 (bpe/mce/minrnn, 문서모드)
 ├─ tests/
 │  ├─ test_model.py             # shape/causality 단위 테스트
 │  ├─ test_mce.py               # MCE 구조 단위 테스트
@@ -113,7 +120,8 @@ Transformer/
 │  └─ check_overfit.py          # 토이 overfit exact-match 검증
 ├─ data/
 │  ├─ toy_parallel.tsv          # 한-영 토이 병렬 코퍼스 (Stage 1)
-│  └─ processed/                # OPUS·AI Hub 정제 TSV (Stage 2, 생성물)
+│  ├─ processed/                # OPUS·AI Hub 정제 TSV (생성물)
+│  └─ raw_opus/                 # OPUS moses 원본 (Stage 6, 생성물)
 ├─ artifacts/                   # Stage 1 토이 산출물
-└─ runs/                        # Stage 2 산출물 (base/, finetune/)
+└─ runs/                        # 학습 산출물 — base/finetune(Stage 2), big/ctx/ctx_paper(Stage 6)
 ```

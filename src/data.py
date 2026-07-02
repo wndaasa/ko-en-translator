@@ -58,23 +58,54 @@ class TranslationDataset(Dataset):
         }
 
 
+# 문서/문맥 모드: 문장 경계 마커. 데이터 본문에 나오지 않는 제어문자(US)를 써서
+# TSV 한 필드 안에 여러 문장을 담고, 인코딩 시 문장 사이에 <eos>를 넣는다.
+CONTEXT_SEP = "\x1f"
+
+
+def _encode_context(tokenizer: Tokenizer, text: str, sep_char: str) -> list[int]:
+    """sep_char 로 나뉜 문장들을 각각 인코딩하고 문장 끝마다 <eos>를 넣는다.
+
+    반환 = enc(s1) + <eos> + enc(s2) + <eos> + ... + enc(sk) + <eos>
+    (문장 경계와 시퀀스 끝을 같은 <eos>로 표시 — vocab 무변경)
+    """
+    ids: list[int] = []
+    for part in text.split(sep_char):
+        part = part.strip()
+        if not part:
+            continue
+        ids += encode(tokenizer, part) + [EOS_ID]
+    return ids
+
+
 def make_example(
     tokenizer: Tokenizer,
     src_text: str,
     tgt_text: str,
     target_lang: str,
     max_len: int,
+    sep_char: str | None = None,
 ) -> dict[str, torch.Tensor]:
     """방향 태그가 붙은 한 개의 학습 예시 생성.
 
-    src      = <2{target}> + encode(src) + <eos>
-    tgt_full = <bos> + encode(tgt) + <eos>
+    문장 모드: src = <2{target}> + encode(src) + <eos>, tgt = <bos> + encode(tgt) + <eos>
+    문서 모드(sep_char 지정): 문장들을 <eos>로 이어붙여 앞뒤 문맥을 한 시퀀스에 담는다.
     길이는 토큰 기준 max_len 으로 잘라 과도한 시퀀스를 방지한다.
     """
-    src_ids = encode(tokenizer, src_text)[: max_len - 2]
-    tgt_ids = encode(tokenizer, tgt_text)[: max_len - 2]
-    src = [tag_id(target_lang)] + src_ids + [EOS_ID]
-    tgt_full = [BOS_ID] + tgt_ids + [EOS_ID]
+    if sep_char is not None:
+        src_body = _encode_context(tokenizer, src_text, sep_char)
+        tgt_body = _encode_context(tokenizer, tgt_text, sep_char)
+        src = ([tag_id(target_lang)] + src_body)[:max_len]
+        tgt_full = ([BOS_ID] + tgt_body)[:max_len]
+        if len(src) < 2:  # 전부 잘려나간 경우의 안전장치
+            src = [tag_id(target_lang), EOS_ID]
+        if len(tgt_full) < 2:
+            tgt_full = [BOS_ID, EOS_ID]
+    else:
+        src_ids = encode(tokenizer, src_text)[: max_len - 2]
+        tgt_ids = encode(tokenizer, tgt_text)[: max_len - 2]
+        src = [tag_id(target_lang)] + src_ids + [EOS_ID]
+        tgt_full = [BOS_ID] + tgt_ids + [EOS_ID]
     return {
         "src": torch.tensor(src, dtype=torch.long),
         "dec_in": torch.tensor(tgt_full[:-1], dtype=torch.long),
@@ -95,12 +126,14 @@ class MTDataset(Dataset):
         max_len: int = 128,
         bidirectional: bool = True,
         limit: int = 0,
+        sep_char: str | None = None,
     ):
         self.tok = tokenizer
         self.pairs = read_pairs(tsv_path)
         if limit:
             self.pairs = self.pairs[:limit]
         self.max_len = max_len
+        self.sep_char = sep_char  # 지정 시 문서/문맥 모드(문장을 <eos>로 결합)
         # 각 예시: (pair_idx, target_lang)
         self.index: list[tuple[int, str]] = []
         for i in range(len(self.pairs)):
@@ -115,7 +148,8 @@ class MTDataset(Dataset):
         pair_idx, target_lang = self.index[idx]
         ko, en = self.pairs[pair_idx]
         src_text, tgt_text = (ko, en) if target_lang == "en" else (en, ko)
-        return make_example(self.tok, src_text, tgt_text, target_lang, self.max_len)
+        return make_example(self.tok, src_text, tgt_text, target_lang, self.max_len,
+                            sep_char=self.sep_char)
 
 
 def collate(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:

@@ -18,8 +18,8 @@ from torch.utils.data import DataLoader
 
 from .char_encoder import MCEConfig, MCETransformer
 from .char_tokenizer import CharTokenizer, build_char_vocab
-from .data import (MCEDataset, MixedMTDataset, MTDataset, collate, mce_collate,
-                   read_pairs, read_triples)
+from .data import (CONTEXT_SEP, MCEDataset, MixedMTDataset, MTDataset, collate,
+                   mce_collate, read_pairs, read_triples)
 from .minrnn import MinRNNConfig, MinRNNSeq2Seq
 from .model import ModelConfig, Seq2SeqTransformer
 from .tokenizer import PAD_ID, load_tokenizer
@@ -117,6 +117,11 @@ def train(args: argparse.Namespace) -> None:
         pairs = read_pairs(args.val_data)
         if args.max_val:
             pairs = pairs[: args.max_val]
+        # 문서모드 BLEU는 근사 참고용(주 지표는 val_loss). 문장 경계 마커는
+        # 디코더가 텍스트로 못 받으므로 공백으로 펴서 넘긴다.
+        if args.context:
+            pairs = [(ko.replace(CONTEXT_SEP, " "), en.replace(CONTEXT_SEP, " "))
+                     for ko, en in pairs]
         val_labeled = [("all", ko, en) for ko, en in pairs]
 
     if arch == "mce":
@@ -145,9 +150,13 @@ def train(args: argparse.Namespace) -> None:
         coll = coll_val = collate
         cfg, model = build_token_model(arch, vocab_size, args, device)
     else:
-        train_ds = MTDataset(args.train_data, tokenizer, max_len=args.max_len, bidirectional=True)
-        val_ds = MTDataset(args.val_data, tokenizer, max_len=args.max_len, bidirectional=True,
-                           limit=args.max_val)
+        # --context: 문서/문맥 모드(문장을 <eos>로 이어붙임). --no-bidi: 단방향(ko→en)만.
+        sep = CONTEXT_SEP if args.context else None
+        bidi = not args.no_bidi
+        train_ds = MTDataset(args.train_data, tokenizer, max_len=args.max_len,
+                             bidirectional=bidi, sep_char=sep)
+        val_ds = MTDataset(args.val_data, tokenizer, max_len=args.max_len,
+                           bidirectional=bidi, limit=args.max_val, sep_char=sep)
         coll = coll_val = collate
         cfg, model = build_token_model(arch, vocab_size, args, device)
 
@@ -156,6 +165,15 @@ def train(args: argparse.Namespace) -> None:
         num_workers=args.num_workers, persistent_workers=args.num_workers > 0, drop_last=True,
     )
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=coll_val)
+    # torch.compile: minRNN 로그스캔 fusion으로 학습 ~1.5배 가속 + 메모리 절감.
+    # 배치마다 시퀀스 길이가 달라 dynamic=True로 두어 길이별 재컴파일을 막는다.
+    # 컴파일본은 학습 forward에만 쓰고, 저장·로드·평가는 원본(model)으로 한다
+    # (컴파일 래퍼는 state_dict 키에 _orig_mod. 접두사를 붙여 체크포인트 호환이 깨지므로).
+    train_model = model
+    if args.compile:
+        train_model = torch.compile(model, dynamic=True)
+        print("torch.compile 적용 (dynamic=True) — 저장/평가는 원본 가중치 사용")
+
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.98), weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: lr_lambda(s, args.warmup))
     use_amp = device == "cuda"
@@ -201,7 +219,7 @@ def train(args: argparse.Namespace) -> None:
             labels = batch["labels"].to(device)
             opt.zero_grad()
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_amp):
-                logits = forward_logits(model, batch, device, arch)
+                logits = forward_logits(train_model, batch, device, arch)
                 loss = F.cross_entropy(
                     logits.reshape(-1, logits.size(-1)), labels.reshape(-1),
                     ignore_index=PAD_ID, label_smoothing=args.label_smoothing,
@@ -258,6 +276,10 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--max-chars", type=int, default=20, help="MCE 단어당 최대 문자 수.")
     ap.add_argument("--mixed", action="store_true",
                     help="도메인 혼합 데이터(domain<TAB>ko<TAB>en) + 도메인 태그 + 도메인별 BLEU.")
+    ap.add_argument("--context", action="store_true",
+                    help="문서/문맥 모드: TSV 한 필드의 여러 문장을 <eos>로 이어붙여 문맥 학습.")
+    ap.add_argument("--no-bidi", action="store_true",
+                    help="단방향(ko→en)만 학습(기본은 양방향).")
     ap.add_argument("--epochs", type=int, default=4)
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--lr", type=float, default=5e-4)
@@ -275,6 +297,8 @@ def build_argparser() -> argparse.ArgumentParser:
     ap.add_argument("--layers", type=int, default=6)
     ap.add_argument("--d-ff", type=int, default=2048)
     ap.add_argument("--dropout", type=float, default=0.1)
+    ap.add_argument("--compile", action="store_true",
+                    help="torch.compile(dynamic=True)로 학습 forward 가속. 저장/평가는 원본 가중치 사용.")
     return ap
 
 
