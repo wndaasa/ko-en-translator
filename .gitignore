@@ -17,6 +17,9 @@ data/한국어-영어 번역 말뭉치(기술과학)/
 artifacts/
 runs/
 
+# 비공개 평가 케이스 — 심사 중 논문 초록 포함(게재 확정 전 커밋 금지)
+docs/eval-cases.private.md
+
 # OS
 .DS_Store
 Thumbs.db
